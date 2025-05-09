@@ -1,0 +1,261 @@
+{
+  "version": "0.1.0",
+  "name": "nft_staking_fixed",
+  "instructions": [
+    {
+      "name": "initialize",
+      "accounts": [
+        {
+          "name": "admin",
+          "isMut": false,
+          "isSigner": false
+        },
+        {
+          "name": "pool_state",
+          "isMut": false,
+          "isSigner": false
+        },
+        {
+          "name": "system_program",
+          "isMut": false,
+          "isSigner": false
+        }
+      ],
+      "args": [
+        {
+          "name": "reward_rate",
+          "type": "u64"
+        },
+        {
+          "name": "emergency_fee",
+          "type": "u8"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "poolState",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "admin",
+            "type": "pubkey"
+          },
+          {
+            "name": "rewardRate",
+            "type": "u64"
+          },
+          {
+            "name": "emergencyFeePercent",
+            "type": "u8"
+          },
+          {
+            "name": "paused",
+            "type": "bool"
+          },
+          {
+            "name": "totalStaked",
+            "type": "u64"
+          },
+          {
+            "name": "commonMultiplier",
+            "type": "u64"
+          },
+          {
+            "name": "rareMultiplier",
+            "type": "u64"
+          },
+          {
+            "name": "epicMultiplier",
+            "type": "u64"
+          },
+          {
+            "name": "legendaryMultiplier",
+            "type": "u64"
+          },
+          {
+            "name": "longStakingBonus",
+            "type": "u64"
+          },
+          {
+            "name": "maxNftsPerUser",
+            "type": "u8"
+          },
+          {
+            "name": "timeMultiplierIncrement",
+            "type": "u64"
+          },
+          {
+            "name": "timeMultiplierPeriodDays",
+            "type": "u64"
+          },
+          {
+            "name": "maxTimeMultiplier",
+            "type": "u64"
+          },
+          {
+            "name": "rewardMint",
+            "type": "pubkey"
+          },
+          {
+            "name": "rewardVault",
+            "type": "pubkey"
+          },
+          {
+            "name": "rewardsDistributed",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "stakeInfo",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "stakedAt",
+            "type": "i64"
+          },
+          {
+            "name": "releaseDate",
+            "type": "i64"
+          },
+          {
+            "name": "isStaked",
+            "type": "bool"
+          },
+          {
+            "name": "tier",
+            "type": "u8"
+          },
+          {
+            "name": "lastClaimTime",
+            "type": "i64"
+          },
+          {
+            "name": "stakingPeriod",
+            "type": "u64"
+          },
+          {
+            "name": "autoCompound",
+            "type": "bool"
+          },
+          {
+            "name": "accumulatedCompound",
+            "type": "u64"
+          },
+          {
+            "name": "currentTimeMultiplier",
+            "type": "u64"
+          },
+          {
+            "name": "lastMultiplierUpdate",
+            "type": "i64"
+          },
+          {
+            "name": "milestonesAchieved",
+            "type": "u8"
+          },
+          {
+            "name": "nextMilestoneDays",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "userStakingInfo",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "stakedCount",
+            "type": "u8"
+          },
+          {
+            "name": "stakedMints",
+            "type": {
+              "vec": "pubkey"
+            }
+          },
+          {
+            "name": "collectionBonus",
+            "type": "u64"
+          }
+        ]
+      }
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "NotStaked",
+      "msg": "NFT is not staked"
+    },
+    {
+      "code": 6001,
+      "name": "NotOwner",
+      "msg": "Not the NFT owner"
+    },
+    {
+      "code": 6002,
+      "name": "NotAdmin",
+      "msg": "Not the pool admin"
+    },
+    {
+      "code": 6003,
+      "name": "PoolPaused",
+      "msg": "Pool is currently paused"
+    },
+    {
+      "code": 6004,
+      "name": "StakingPeriodNotCompleted",
+      "msg": "Staking period not completed yet"
+    },
+    {
+      "code": 6005,
+      "name": "InvalidNftTier",
+      "msg": "Invalid NFT tier"
+    },
+    {
+      "code": 6006,
+      "name": "InvalidStakingPeriod",
+      "msg": "Invalid staking period"
+    },
+    {
+      "code": 6007,
+      "name": "MaxNftsExceeded",
+      "msg": "Maximum NFTs per user exceeded"
+    },
+    {
+      "code": 6008,
+      "name": "InvalidMint",
+      "msg": "Invalid token mint"
+    },
+    {
+      "code": 6009,
+      "name": "InvalidVault",
+      "msg": "Invalid reward vault"
+    },
+    {
+      "code": 6010,
+      "name": "InsufficientRewardBalance",
+      "msg": "Insufficient reward balance"
+    }
+  ]
+}

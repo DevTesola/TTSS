@@ -1,0 +1,455 @@
+diff --git a/programs/nft_staking_fixed/src/lib.rs b/programs/nft_staking_fixed/src/lib.rs
+index XXXXXXX..XXXXXXX 100644
+--- a/programs/nft_staking_fixed/src/lib.rs
++++ b/programs/nft_staking_fixed/src/lib.rs
+@@ -26,8 +26,13 @@ pub mod nft_staking_fixed {
+         // Set staking period bonuses
+         pool_state.long_staking_bonus = 20;  // 20% bonus for longer staking periods
+         
+-        // Set maximum NFTs per user
+-        pool_state.max_nfts_per_user = 5;    // Maximum 5 NFTs per user
++        // Set maximum NFTs per user to 3 (was 5)
++        pool_state.max_nfts_per_user = 3;    // Maximum 3 NFTs per user
++        
++        // Initialize dynamic reward system parameters
++        pool_state.time_multiplier_increment = 500;   // 5% per period
++        pool_state.time_multiplier_period_days = 30;  // 30 day periods
++        pool_state.max_time_multiplier = 5000;        // Max 50% time multiplier
+ 
+         msg!("NFT Staking Pool initialized");
+         Ok(())
+@@ -58,12 +63,18 @@ pub mod nft_staking_fixed {
+         stake_info.owner = owner.key();
+         stake_info.mint = nft_mint.key();
+         stake_info.staked_at = now;
+-        stake_info.release_date = now + (staking_period * 24 * 60 * 60) as i64;
++        stake_info.release_date = now + (staking_period * 86400) as i64;
+         stake_info.is_staked = true;
+         stake_info.tier = nft_tier;
+         stake_info.last_claim_time = now;
+         stake_info.staking_period = staking_period;
+         stake_info.auto_compound = auto_compound;
+         stake_info.accumulated_compound = 0;
++        
++        // Initialize time-based multiplier fields
++        stake_info.current_time_multiplier = 0;
++        stake_info.last_multiplier_update = now;
++        stake_info.milestones_achieved = 0;
++        stake_info.next_milestone_days = 30; // First milestone at 30 days
+ 
+         // Transfer NFT to escrow
+         token::transfer(
+@@ -85,6 +96,31 @@ pub mod nft_staking_fixed {
+         let user_staking_info = &mut ctx.accounts.user_staking_info;
+         user_staking_info.staked_count += 1;
+         user_staking_info.staked_mints.push(nft_mint.key());
++        
++        // Update collection bonus based on staked count
++        let old_bonus = user_staking_info.collection_bonus;
++        let new_bonus = if user_staking_info.staked_count >= 3 {
++            2000 // 3 NFTs: 20% bonus
++        } else if user_staking_info.staked_count == 2 {
++            1000 // 2 NFTs: 10% bonus
++        } else {
++            0    // 1 NFT: no bonus
++        };
++        
++        // Update bonus if changed
++        let bonus_changed = new_bonus != old_bonus;
++        if bonus_changed {
++            user_staking_info.collection_bonus = new_bonus;
++            
++            // Emit collection bonus update event
++            emit!(CollectionBonusUpdated {
++                user: owner.key(),
++                staked_count: user_staking_info.staked_count,
++                new_bonus,
++                old_bonus,
++                timestamp: now,
++            });
++        }
+ 
+         // Emit stake event
+         emit!(NftStaked {
+@@ -151,6 +187,22 @@ pub mod nft_staking_fixed {
+         if let Some(index) = user_staking_info.staked_mints.iter().position(|&m| m == ctx.accounts.nft_mint.key()) {
+             user_staking_info.staked_mints.remove(index);
+         }
++        
++        // Update collection bonus after unstaking
++        let old_bonus = user_staking_info.collection_bonus;
++        let new_bonus = if user_staking_info.staked_count >= 3 {
++            2000 // 3+ NFTs: 20% bonus
++        } else if user_staking_info.staked_count == 2 {
++            1000 // 2 NFTs: 10% bonus
++        } else {
++            0    // 0-1 NFT: no bonus
++        };
++        
++        // Update bonus if changed
++        if new_bonus != old_bonus {
++            user_staking_info.collection_bonus = new_bonus;
++            // Emit event is handled below
++        }
+ 
+         // Emit unstake event
+         emit!(NftUnstaked {
+@@ -158,6 +210,17 @@ pub mod nft_staking_fixed {
+             nft_mint: ctx.accounts.nft_mint.key(),
+             timestamp: now,
+         });
++        
++        // Emit collection bonus update event if changed
++        if new_bonus != old_bonus {
++            emit!(CollectionBonusUpdated {
++                user: ctx.accounts.owner.key(),
++                staked_count: user_staking_info.staked_count,
++                new_bonus,
++                old_bonus,
++                timestamp: now,
++            });
++        }
+ 
+         Ok(())
+     }
+@@ -185,10 +248,30 @@ pub mod nft_staking_fixed {
+         // Calculate elapsed time since last claim
+         let time_since_last_claim = now - stake_info.last_claim_time;
+         let seconds_in_day = 24 * 60 * 60;
+-        let days_elapsed = (time_since_last_claim / seconds_in_day) as u64;
++        let full_days_elapsed = (time_since_last_claim / seconds_in_day) as u64;
++        let fractional_day = (time_since_last_claim % seconds_in_day) as f64 / seconds_in_day as f64;
++        
++        // Update time-based multiplier if needed
++        let days_staked = (now - stake_info.staked_at) / seconds_in_day;
++        let periods_completed = (days_staked / pool_state.time_multiplier_period_days as i64) as u64;
++        let new_time_multiplier = std::cmp::min(
++            periods_completed * pool_state.time_multiplier_increment,
++            pool_state.max_time_multiplier
++        );
++        
++        // If multiplier has increased, update it and check milestones
++        if new_time_multiplier > stake_info.current_time_multiplier {
++            let old_multiplier = stake_info.current_time_multiplier;
++            stake_info.current_time_multiplier = new_time_multiplier;
++            stake_info.last_multiplier_update = now;
++            
++            // Check and process milestones
++            check_and_process_milestone(ctx, now)?;
++            
++            // Emit event is handled below
++        }
+ 
+-        // If no days have passed, no rewards to claim
+-        if days_elapsed == 0 {
++        // If almost no time has passed, no rewards to claim
++        if full_days_elapsed == 0 && fractional_day < 0.001 {
+             return Ok(());
+         }
+ 
+@@ -210,11 +293,26 @@ pub mod nft_staking_fixed {
+             0
+         };
+ 
+-        // Calculate base reward amount (base rate * tier multiplier * days * (1 + period bonus/100))
+-        let bonus_multiplier = 100 + staking_period_bonus;
+-        let base_reward = pool_state.reward_rate * tier_multiplier * days_elapsed * bonus_multiplier / 10000;
++        // Get time-based multiplier bonus (basis points to percentage)
++        let time_multiplier_bonus = stake_info.current_time_multiplier / 100;
++        
++        // Get collection bonus from user staking info
++        let user_staking_info = &ctx.accounts.user_staking_info;
++        let collection_bonus = user_staking_info.collection_bonus / 100;
++        
++        // Calculate total bonus percentage (all bonuses are additive)
++        let total_bonus_percent = staking_period_bonus + time_multiplier_bonus + collection_bonus;
++        
++        // Apply bonus multiplier
++        let bonus_multiplier = 100 + total_bonus_percent;
++        
++        // Calculate base daily reward
++        let base_daily_reward = pool_state.reward_rate * tier_multiplier / 100;
++        
++        // Calculate reward for full days
++        let full_days_reward = base_daily_reward * full_days_elapsed * bonus_multiplier / 10000;
++        let partial_day_reward = (base_daily_reward * bonus_multiplier * fractional_day as u64) / 10000;
++        let base_reward = full_days_reward + partial_day_reward;
+         
+         // Calculate compound interest on accumulated rewards (if any)
+         let compound_interest = if stake_info.accumulated_compound > 0 {
+@@ -240,7 +338,7 @@ pub mod nft_staking_fixed {
+                 nft_mint: ctx.accounts.nft_mint.key(),
+                 timestamp: now,
+             });
+-            
++
+             msg!("Compounded {} reward tokens. New total: {}", 
+                 total_reward, stake_info.accumulated_compound);
+         } else {
+@@ -253,12 +351,67 @@ pub mod nft_staking_fixed {
+             });
+             
+             // In a real implementation, token transfer would happen here
+-            msg!("Claimed {} reward tokens for {} days of staking", total_reward, days_elapsed);
++            msg!("Claimed {} reward tokens for {} days of staking", 
++                total_reward, full_days_elapsed);
++        }
++        
++        // If time multiplier was updated, emit event
++        if new_time_multiplier > stake_info.current_time_multiplier {
++            emit!(MultiplierUpdated {
++                user: ctx.accounts.user.key(),
++                nft_mint: ctx.accounts.nft_mint.key(),
++                new_multiplier: new_time_multiplier,
++                old_multiplier: stake_info.current_time_multiplier,
++                days_staked: days_staked as u64,
++                timestamp: now,
++            });
+         }
+ 
+         Ok(())
+     }
+ 
++    // New instruction: manually update time multiplier
++    pub fn update_time_multiplier(ctx: Context<UpdateTimeMultiplier>) -> Result<()> {
++        let stake_info = &mut ctx.accounts.stake_info;
++        let pool_state = &ctx.accounts.pool_state;
++        let current_time = Clock::get()?.unix_timestamp;
++        
++        // Verify NFT is staked and pool is not paused
++        if !stake_info.is_staked {
++            return err!(ErrorCode::NotStaked);
++        }
++        
++        if pool_state.paused {
++            return err!(ErrorCode::PoolPaused);
++        }
++        
++        // Calculate days staked
++        let days_staked = (current_time - stake_info.staked_at) / 86400;
++        
++        // Calculate periods completed
++        let multiplier_periods = (days_staked / pool_state.time_multiplier_period_days as i64) as u64;
++        
++        // Calculate new multiplier
++        let new_multiplier = std::cmp::min(
++            multiplier_periods * pool_state.time_multiplier_increment,
++            pool_state.max_time_multiplier
++        );
++        
++        // Only update if multiplier has increased
++        if new_multiplier > stake_info.current_time_multiplier {
++            let old_multiplier = stake_info.current_time_multiplier;
++            stake_info.current_time_multiplier = new_multiplier;
++            stake_info.last_multiplier_update = current_time;
++            
++            // Check for milestones
++            check_and_process_milestone(ctx, current_time)?;
++            
++            // Emit event
++            emit!(MultiplierUpdated {
++                user: ctx.accounts.owner.key(),
++                nft_mint: ctx.accounts.nft_mint.key(),
++                new_multiplier,
++                old_multiplier,
++                days_staked: days_staked as u64,
++                timestamp: current_time,
++            });
++            
++            msg!("Time multiplier updated to {}%", new_multiplier / 100);
++        } else {
++            msg!("No multiplier update needed");
++        }
++        
++        Ok(())
++    }
++
+     // Admin functions
+     
+     pub fn pause_pool(ctx: Context<AdminAction>) -> Result<()> {
+@@ -322,6 +475,13 @@ pub struct PoolState {
+     pub epic_multiplier: u64,
+     pub legendary_multiplier: u64,
+     pub long_staking_bonus: u64,
++    
++    // New fields for dynamic reward system
++    pub time_multiplier_increment: u64,    // Basis points per period
++    pub time_multiplier_period_days: u64,  // Number of days per period
++    pub max_time_multiplier: u64,          // Maximum time multiplier in basis points
++    
++    // Existing field
+     pub max_nfts_per_user: u8,
+ }
+ 
+@@ -336,6 +496,13 @@ pub struct StakeInfo {
+     pub staking_period: u64,
+     pub auto_compound: bool,
+     pub accumulated_compound: u64,
++    
++    // New fields for dynamic rewards
++    pub current_time_multiplier: u64,     // Current time-based multiplier (basis points)
++    pub last_multiplier_update: i64,      // Last time multiplier was updated
++    pub milestones_achieved: u8,          // Bitmap of achieved milestones
++    pub next_milestone_days: u64,         // Days until next milestone
++    // 8 bits for milestones: 30d, 90d, 180d, 365d, etc.
+ }
+ 
+ #[account]
+@@ -343,6 +510,9 @@ pub struct UserStakingInfo {
+     pub owner: Pubkey,
+     pub staked_count: u8,
+     pub staked_mints: Vec<Pubkey>,
++    
++    // New field for collection bonus
++    pub collection_bonus: u64,         // Collection bonus in basis points (500 = 5%)
+ }
+ 
+ // Context structures
+@@ -375,6 +545,22 @@ pub struct ClaimRewards<'info> {
+     pub pool_state: Account<'info, PoolState>,
+ }
+ 
++// New context for time multiplier update
++#[derive(Accounts)]
++pub struct UpdateTimeMultiplier<'info> {
++    #[account(mut)]
++    pub owner: Signer<'info>,
++    
++    pub nft_mint: Account<'info, Mint>,
++    
++    #[account(
++        mut,
++        seeds = [b"stake", nft_mint.key().as_ref()],
++        bump,
++    )]
++    pub stake_info: Account<'info, StakeInfo>,
++    
++    pub pool_state: Account<'info, PoolState>,
++}
++
+ // Other contexts...
+ 
+ // Events
+@@ -427,8 +613,65 @@ pub struct RewardsCompounded {
+     pub timestamp: i64,
+ }
+ 
++// New events
++#[event]
++pub struct MultiplierUpdated {
++    pub user: Pubkey,
++    pub nft_mint: Pubkey,
++    pub new_multiplier: u64,
++    pub old_multiplier: u64,
++    pub days_staked: u64,
++    pub timestamp: i64,
++}
++
++#[event]
++pub struct MilestoneAchieved {
++    pub user: Pubkey,
++    pub nft_mint: Pubkey,
++    pub milestone_type: u8,    // 0=30d, 1=90d, 2=180d, 3=365d
++    pub reward_amount: u64,
++    pub timestamp: i64,
++}
++
++#[event]
++pub struct CollectionBonusUpdated {
++    pub user: Pubkey,
++    pub staked_count: u8,
++    pub new_bonus: u64,
++    pub old_bonus: u64,
++    pub timestamp: i64,
++}
++
+ // More events...
+ 
++// Helper function for milestone processing
++fn check_and_process_milestone<'info>(
++    ctx: Context<'_, '_, '_, 'info, ClaimRewards<'info>>,
++    current_time: i64,
++) -> Result<()> {
++    let stake_info = &mut ctx.accounts.stake_info;
++    let pool_state = &ctx.accounts.pool_state;
++    
++    // Calculate days staked
++    let days_staked = (current_time - stake_info.staked_at) / 86400;
++    
++    // Define milestones: (days, bit position, bonus percentage)
++    let milestones = [
++        (30, 0, 5),    // 30-day milestone: 5% bonus
++        (90, 1, 10),   // 90-day milestone: 10% bonus
++        (180, 2, 15),  // 180-day milestone: 15% bonus
++        (365, 3, 25),  // 365-day milestone: 25% bonus
++    ];
++    
++    // Check for newly achieved milestones
++    for &(days, bit_pos, bonus) in milestones.iter() {
++        let bit_mask = 1u8 << bit_pos;
++        
++        // If milestone reached but not yet claimed
++        if days_staked >= days as i64 && (stake_info.milestones_achieved & bit_mask) == 0 {
++            // Mark milestone as achieved
++            stake_info.milestones_achieved |= bit_mask;
++            
++            // Calculate milestone reward (30 days of base rate * bonus %)
++            let tier_multiplier = match stake_info.tier {
++                0 => pool_state.common_multiplier,
++                1 => pool_state.rare_multiplier,
++                2 => pool_state.epic_multiplier,
++                3 => pool_state.legendary_multiplier,
++                _ => pool_state.common_multiplier,
++            };
++            
++            let base_daily_reward = pool_state.reward_rate * tier_multiplier / 10000;
++            let milestone_reward = base_daily_reward * bonus as u64 * 30 / 100;
++            
++            // Apply to compound amount if auto-compound enabled
++            if stake_info.auto_compound {
++                stake_info.accumulated_compound += milestone_reward;
++            }
++            
++            // Find next milestone
++            let mut next_milestone = 0;
++            for &(m_days, m_pos, _) in milestones.iter() {
++                if m_days as i64 > days_staked && (stake_info.milestones_achieved & (1 << m_pos)) == 0 {
++                    next_milestone = m_days;
++                    break;
++                }
++            }
++            
++            stake_info.next_milestone_days = next_milestone;
++            
++            // Emit milestone event
++            emit!(MilestoneAchieved {
++                user: ctx.accounts.user.key(),
++                nft_mint: ctx.accounts.nft_mint.key(),
++                milestone_type: bit_pos as u8,
++                reward_amount: milestone_reward,
++                timestamp: current_time,
++            });
++            
++            msg!("Milestone achieved: {} days. Reward: {}", days, milestone_reward);
++        }
++    }
++    
++    Ok(())
++}
++
+ // Error codes
+ #[error_code]
+ pub enum ErrorCode {
+@@ -455,6 +698,13 @@ pub enum ErrorCode {
+     
+     #[msg("Invalid voting parameters")]
+     InvalidVotingParams,
++    
++    // New error codes
++    #[msg("Invalid milestone")]
++    InvalidMilestone,
++    
++    #[msg("Arithmetic error")]
++    ArithmeticError,
+ }
+ 
